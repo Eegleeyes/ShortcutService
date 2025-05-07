@@ -1,4 +1,6 @@
+-- Used services
 local uis = game:GetService("UserInputService")
+local cas = game:GetService("ContextActionService")
 
 -- Create a type 'Shortcut'
 export type Shortcut = {
@@ -13,6 +15,9 @@ local allShortcuts = {}
 
 -- Define a table to list all currently bound Shortcuts
 local activeShortcuts = {}
+
+-- Define a table to list all unkilled coroutines
+local aliveCoroutines = {}
 
 -- Create the table to return
 local ShortcutService = {}
@@ -132,8 +137,44 @@ function ShortcutService:DeactivateAllShortcuts():nil
 	activeShortcuts = {}
 end
 
+-- Local function to loop through aliveCoroutines, check each of their statuses, and kill inactive ones
+local function killInactiveCoroutines()
+	-- Called every input
+	-- This ensures that all coroutines are promptly dealt with, and prevents the build up of coroutines
+	
+	if #aliveCoroutines <= 0 then return end -- If there are no coroutines, then there is no need for more work
+	
+	for i, co in ipairs(aliveCoroutines) do
+		if coroutine.status(co) == "dead" then
+			-- officially close it and remove it from the table
+			coroutine.close(co)
+			-- Have to do a table.find() because we're actively removing elements and can't trust the index "i"
+			table.remove(aliveCoroutines,table.find(aliveCoroutines,co))
+		end
+	end
+end
+
+-- Local function to disable input of provided keys
+local function sinkInput(Keys:{Enum.KeyCode})
+	cas:BindAction("SINK_SHORTCUTSERVICE_KEYS",
+		function ()
+			return Enum.ContextActionResult.Sink
+		end,
+		false,
+		table.unpack(Keys)
+	)
+end
+
+-- Local function to enable input of provided keys
+local function floatInput()
+	cas:UnbindAction("SINK_SHORTCUTSERVICE_KEYS")
+end
+
 -- Local function for the handling of an input
 local function onInput(i:InputObject,p:boolean)
+	-- Kill all inactive coroutines
+	killInactiveCoroutines()
+	
 	-- Loop through all the active shortcuts
 	for name, shortcut in pairs(activeShortcuts) do
 		local allPressedKeys = uis:GetKeysPressed()
@@ -155,8 +196,19 @@ local function onInput(i:InputObject,p:boolean)
 		end
 		
 		if onlyRelevantKeysPressed and allRelevantKeysPressed then
-			-- Call the handler function for the shortcut, passing the name, input object, and if the game processed the event
-			shortcut.Handler(name,i,p)
+			-- Sink input of relative keys to prevent something like ctrl+w to walk the player forward
+			sinkInput(shortcut.Keys)
+			
+			-- Create a coroutine to allow yeildable handler functions to not stall the enabling of keys
+			local co = coroutine.create(function()
+				-- Call the handler function for the shortcut, passing the name, input object, and if the game processed the event
+				shortcut.Handler(name,i,p)
+			end)
+			table.insert(aliveCoroutines,co) -- Insert it into the coroutine table
+			coroutine.resume(co) -- Start it
+			
+			-- Enable input of relative keys again
+			floatInput()
 		end
 	end
 end
